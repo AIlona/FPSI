@@ -1,0 +1,1107 @@
+//load "Element_Mixte2d"
+load "medit"
+load "MUMPS"
+//load "UMFPACK64"
+//load "Element_P3"
+
+//include "MakeLagrangeMesh.edp";
+
+
+// CHANGED ERROR COMPUTATION IN DARCY TO A HIGHER ORDER SPACE RT1-P1dc
+
+
+// MACRO:
+macro div(ax,ay) (dx(ax)+dy(ay))//
+macro sigmaEnx(ax,ay) (muS*(2.0*dx(ax)*N.x + (dx(ay)+dy(ax))*N.y) + lambdaS*(div(ax,ay))*N.x)//
+macro sigmaEny(ax,ay) (muS*(2.0*dy(ay)*N.y + (dx(ay)+dy(ax))*N.x) + lambdaS*(div(ax,ay))*N.y)//
+macro sigmaFnx(ax,ay) (muF*(dx(ax)*N.x + dy(ax)*N.y))//
+macro sigmaFny(ax,ay) (muF*(dy(ay)*N.y + dx(ay)*N.x))//
+macro sigmasymFnx(ax,ay) (ci*muF*(dx(ax)*N.x + dy(ax)*N.y))//
+macro sigmasymFny(ax,ay) (ci*muF*(dy(ay)*N.y + dx(ay)*N.x))//
+macro cdot(ax,ay,bx,by) (ax*bx+ay*by)//
+macro tgx(ax,ay) (ax-cdot(ax,ay,N.x,N.y)*N.x)//
+macro tgy(ax,ay) (ay-cdot(ax,ay,N.x,N.y)*N.y)//
+
+// time:
+real T=1.0;
+real delt=0.01;
+int pr=1;
+func NN=T/delt;
+
+// FLAGS:
+bool debug=false;	   // true for debuging, mesh plots etc.
+bool plotflag=1;   // true for making .vtk files
+bool converg=0;	   // true for convergence test     (output made in reverse order, from finer mesh to coarser)
+bool intresid=1;   // true for interface residual	(output made in reverse order, from finer mesh to coarser)
+int timedep=0;
+
+int m,n,l;
+
+if(converg){
+	m = 320;
+	l = 20;
+} else {
+	m=40;
+	l=m;
+}
+
+int number = log(real(m/l))/log(2.0) + 1;
+cout << "Number of steps: " << number << endl;
+		
+// SAVE SOLUTIONS:
+include "SaveVTK2d.edp";
+
+/*
+// MESH FOR PERMEABILITY AND POROSITY
+mesh inThPerm = square(60,220);
+//mesh ThPerm = movemesh(inThPerm,[1200*x,2200*y-1100]);
+mesh ThPerm = movemesh(inThPerm,[x,2*y-1]);
+fespace Ph(ThPerm,P0);
+Ph inPor, inPermx, inPermy;
+
+// IMPORT POROSITY AND PERMEABILITY
+{
+	ifstream poros("poros.txt");
+	poros >> inPor[];
+}
+{
+	ifstream px("permx.dat");
+	px >> inPermx[];
+}
+{
+	ifstream py("permy.dat");
+	py >> inPermy[];
+}
+*/
+
+// MESH FOR REFERENCE SOLUTION:
+// MESH FOR REFERENCE SOLUTION:
+
+border bottom(t=0,100){ x=t; y=-100; label=1;};
+border right(t=-100,100){ x=100; y=t; label=2;};
+border top(t=0,100){ x=t; y=100; label=3;};
+border leftU(t=5,100){ x=0; y=t; label=4;};
+border leftD(t=-100,-5){ x=0; y=t; label=4;};
+border curve(t=-5,5){ x=2*(25-t*t); y=t; label=5;};
+border fcurve(t=-5,5){ x=2*(25-t*t); y=t; label=5;};
+border fleft(t=-5,5){ x=0; y=t; label=6;};
+
+int mmm = l;
+mesh iThS1= buildmesh(top(-mmm)+leftU(-(mmm-mmm/20))+leftD(-(mmm-mmm/20))+bottom(mmm)+right(mmm)+curve(-2*mmm));
+mesh iThF= buildmesh(fcurve(2*mmm)+fleft(-mmm/10));
+
+func movex=x/100.0;
+func movey=y/100.0;
+//func movey=(5.0*cos((pi*x+y)/50.0)*cos((pi*x+y)/50.0)*cos((x+y)/50.0)+y/2.0-x/10.0)/100.0; // Ok, not very thin, not so wavy
+//func movey=(5.0*cos((pi*x+y)/30.0)*cos((pi*x+y)/30.0)*cos((x+y)/30.0)+y/2.0-x/10.0)/100.0; // Ok, thinner, wavier
+//func movey=(5.0*cos((pi*x+y)/100.0)*cos((pi*x+y)/100.0)*cos((x+y)/100.0)+y/2.0-x/10.0)/100.0; // Ok, least wavy, thinner
+
+//mesh iThS1=square(l,l,[x-1.05,y],flags=1);
+//mesh iThF=square(l/10,l,[x/20-0.05,y],flags=1);
+
+mesh[int] ithS(number);
+mesh[int] ithF(number);
+
+mesh[int] thS(number);
+mesh[int] thF(number);
+mesh[int] thL(number);
+
+ithS[0] = iThS1; 
+ithF[0] = iThF;
+
+for(int i=1;i<number;i++){
+	//ithS[i] = trunc(ithS[i-1],1,split=2);
+	//ithF[i] = trunc(ithF[i-1],1,split=2);
+	ithS[i] = splitmesh(ithS[i-1],2);
+	ithF[i] = splitmesh(ithF[i-1],2);
+}
+
+for(int i=0;i<number;i++){
+	thF[i] = movemesh(ithF[i],[movex,movey]);
+	thS[i] = movemesh(ithS[i],[movex,movey]);
+	thL[i] = emptymesh(thF[i]);
+}
+
+// MESH FOR REFERENCE SOLUTION: THE FINEST ONE
+mesh ThS1test = thS[number-1];
+mesh ThFtest = thF[number-1];
+mesh ThLtest = thL[number-1];
+/*
+mesh ThS1test=square(m,m,[x-1.05,y],flags=1);
+mesh ThFtest=square(m/10,m,[x/10-0.05,y],flags=1);
+mesh inThLtest=square(1,m,[x/10-0.05,y],flags=1);
+*/
+
+// FE SPACES FOR REFERENCE SOLUTIONS:
+fespace testFh(ThFtest,[P2,P2,P1]);
+testFh [testuFx,testuFy,testPf][NN];
+
+//fespace testPh1(ThS1test, P1dc);
+fespace testPh1(ThS1test, P0);
+testPh1 [testPp1][NN], [testPp];
+
+//fespace testS1h(ThS1test, [P2,P2]);
+fespace testS1h(ThS1test, [P1,P1]);
+testS1h [testeta1x,testeta1y][NN], [testetax,testetay];
+
+//fespace testS1hdiv(ThS1test, [RT1]);
+fespace testS1hdiv(ThS1test, [RT0]);
+testS1hdiv [testuP1x,testuP1y][NN];
+
+//fespace testL(ThLtest, [P1dc]);
+fespace testL(ThLtest, [P0]);
+testL testLAMBDA1[NN], testLAMBDA2[NN];
+
+int nMeshes = number;
+int count=0;
+// initialize arrays for errors
+real[int] error1(nMeshes);
+real[int] error2(nMeshes);
+real[int] error3(nMeshes);
+real[int] error4(nMeshes);
+real[int] error5(nMeshes);
+real[int] error6(nMeshes);
+real[int] error7(nMeshes);
+
+real[int] abs1(nMeshes);
+real[int] abs4(nMeshes);
+real[int] abs6(nMeshes);
+real[int] abs7(nMeshes);
+
+real[int] error2tmp(NN);
+real[int] error3tmp(NN);
+real[int] error5tmp(NN);
+
+real[int] cond13left(nMeshes);
+real[int] cond13right(nMeshes);
+real[int] displright(nMeshes);
+
+
+int meshcount = number-1;
+// h-TEST LOOP:
+for(int n=m;n>=l;n/=2){
+
+string namefluid="./paraview"+string(n)+"/fluid";
+string namesolid1="./paraview"+string(n)+"/structure1_";
+string nameq1="./paraview"+string(n)+"/Darcy1_";
+string namesolid2="./paraview"+string(n)+"/structure2_";
+string nameq2="./paraview"+string(n)+"/Darcy2_";
+
+/*
+mesh inThS1 = buildmesh(top(-n)+leftU(-(n-n/20))+leftD(-(n-n/20))+bottom(n)+right(n)+curve(-2*n));
+mesh inThF = buildmesh(fcurve(2*n)+fleft(-n/10));
+
+mesh ThF=movemesh(inThF,[movex,movey]);
+mesh ThS1=movemesh(inThS1,[movex,movey]);
+
+mesh ThL=emptymesh(ThS1);
+*/
+
+mesh ThF=thF[meshcount];
+mesh ThS1=thS[meshcount];
+mesh ThL = thL[meshcount];
+
+/*
+mesh ThS1=square(n,n,[x-1.05,y],flags=1);
+mesh ThF=square(n/10,n,[x/10-0.05,y],flags=1);
+mesh inThL=square(1,n,[x/10-0.05,y],flags=1);
+
+mesh ThL = emptymesh(inThL);
+
+*/
+
+
+cout << "lala"<< endl;
+
+string filename = "mesh"+string(n)+".eps"; 
+//plot(ThS1,ThF,ps=filename);
+
+
+//mesh ThL=emptymesh(ThFtest);
+//mesh ThL = emptymesh(ThS1);
+//mesh ThL = emptymesh(thL[meshcount]);
+//plot(ThL,ps="lagrange.eps");
+
+
+meshcount--;
+
+
+
+//plot(ThF,ThS1, wait=false, ps="mesh.eps");
+//cout << "Plotted" << endl;
+
+if(debug){
+	plot(ThF,ThS1, wait=true);
+	plot(ThL,ThS1, wait=true);
+	
+	int nbtriangles=ThF.nt;
+	for (int i=0;i<nbtriangles;i++)
+	for (int j=0; j <3; j++)
+	cout << i << " " << j << " Th[i][j] = " << ThF[i][j] << "  x = "<< ThF[i][j].x  << " , y= "<< ThF[i][j].y << ",  label=" << ThF[i][j].label << endl;
+}
+
+// finite element spaces for analysis:
+fespace Pwc1(ThS1,P0);
+Pwc1 hhhh1=hTriangle;
+real hmin1=hhhh1[].min;
+real hmax1=hhhh1[].max;
+real hdir1=hmin1;
+
+fespace Pwc3(ThF,P0);
+Pwc3 h3=hTriangle;
+real hmin3=h3[].min;
+real hmax3=h3[].max;
+
+
+
+// FINITE ELEMENT SPACES:
+// fluid:
+fespace VFh(ThF,[P2,P2,P1]);	
+// structure:
+fespace VM1h(ThS1,[RT0,P0]);
+fespace VM11h(ThS1,[RT1,P1dc]);
+// displacement
+fespace VS1h(ThS1,[P1,P1]);
+fespace PP1h(ThS1, P1);
+// injection:
+fespace FFh(ThF, P1);
+fespace FFinh(ThF, P1);
+// lagrange:
+fespace LLh(ThL, P0);
+// permeability
+fespace PRMh(ThS1,P0);
+
+
+
+VFh [uFx,uFy,pF], [vFx,vFy,wF], [uFoldx,uFoldy,pFold];
+
+VM1h [uP1x,uP1y,pP1], [vP1x,vP1y,wP1], [uP1oldx,uP1oldy,pP1old], [dummyX, dummyY, dummyP];
+VM11h [uP11x,uP11y,pP11], [vP11x,vP11y,wP11], [uP11oldx,uP11oldy,pP11old], [dummyX1, dummyY1, dummyP1];
+VS1h [eta1x,eta1y], [ksi1x,ksi1y], [eta1oldx,eta1oldy];
+PP1h pp01, fx1;
+
+FFh g,pf0;
+FFinh gref;
+
+LLh LAMBDA, MU, LAMBDAold;
+
+/*
+PRMh Por, Kx, Ky, es;
+
+// Permeability from file
+if(true){
+	Por = inPor;
+	Kx = inPermx;
+	Ky = inPermy;
+}
+*/
+
+
+
+// plotting
+fespace PlotFh(ThF,[P1,P1]);
+PlotFh [plotuFx,plotuFy];
+
+fespace PlotV1h(ThS1,[P1,P1]);
+PlotV1h [ploteta1x,ploteta1y], [plotuP1x,plotuP1y], [psis1x,psis1y],[psiq1x,psiq1y];
+
+// DATA
+// structure:
+func rohS=897.0; 	  
+//func ES=1e7*pow((1 - Por/0.5),2.1);			// IN RANGE
+func ES = 1e7;
+func sigmaS=0.2;
+//func lambdaS=(0.5*1.e3*(1/(coef*Kx)))*sigmaS/((1+sigmaS)*(1-2*sigmaS));
+//func muS=(0.5*1.e3*(1/(coef*Kx)))/(2*(1+sigmaS));
+//func lambdaS=ES*sigmaS/((1+sigmaS)*(1-2*sigmaS));
+//func muS=ES/(2*(1+sigmaS));
+func lambdaS = 1.0;
+func muS = 1.0;
+
+// Brinkman:
+func rohF=1.0; 	  
+real Kfxx = 0.1;   		// NOT USED
+real Kfyy = 0.1;		// NOT USED
+real muF = 1.0; 		
+real kappafxx = muF/Kfxx;
+real kappafyy = muF/Kfyy;
+// Darcy:
+real alfa=1.0;
+real alfabjs=1.0;
+real s0=1.00;
+real Kxx=1.0;
+real Kyy=1.0;
+real kappaxx=muF/Kxx;
+real kappayy=muF/Kyy;
+real coef=9.869233e-13;
+// BJS:
+real bjs=alfabjs*muF*sqrt(2)/sqrt(Kxx+Kyy);
+// stabilization:
+real stab=0.0;
+real stabf=0.0;
+// injection:
+real VolFlowRate=25; 
+real ld=0; 
+real p0=0.0;
+real inject=1.0;
+
+/*
+func rohS=897.0; 	  
+//func ES=1e7*pow((1 - Por/0.5),2.1);			// IN RANGE
+func ES = 1e7;
+func sigmaS=0.2;
+//func lambdaS=(0.5*1.e3*(1/(coef*Kx)))*sigmaS/((1+sigmaS)*(1-2*sigmaS));
+//func muS=(0.5*1.e3*(1/(coef*Kx)))/(2*(1+sigmaS));
+func lambdaS=ES*sigmaS/((1+sigmaS)*(1-2*sigmaS));
+func muS=ES/(2*(1+sigmaS));
+
+// Brinkman:
+func rohF=897.0; 	  
+real Kfxx = 0.1;   		// NOT USED
+real Kfyy = 0.1;		// NOT USED
+real muF = 1.e-6; 		
+real kappafxx = muF/Kfxx;
+real kappafyy = muF/Kfyy;
+// Darcy:
+real alfa=1.0;
+real alfabjs=1.0;
+real s0=6.89e-2;
+real Kxx=200.0e-12;
+real Kyy=50.0e-12;
+real kappaxx=muF/Kxx;
+real kappayy=muF/Kyy;
+real coef=9.869233e-13;
+// BJS:
+real bjs=alfabjs*muF*sqrt(2)/sqrt(Kxx+Kyy);
+// stabilization:
+real stab=0.0;
+real stabf=0.0;
+// injection:
+real VolFlowRate=25; 
+real ld=0; 
+real p0=1000.0;
+real inject=10.0;
+*/
+
+
+
+// FUNCTIONS TO INITIALIZE VARIABLES
+func real force(real x, real y){
+	if(x^2+y^2<=50) return (ld); 
+	else return (0.0);
+}
+
+func real initPp(real x, real y){
+	return(p0);
+}
+
+func real initu(real x, real y){
+	return(0);
+}
+
+func real initv(real x, real y){
+	return(0);
+}
+
+func real initPf(real x, real y){
+	return(p0);
+}
+
+gref=force(x,y);  
+
+if(debug){
+	[plotuFx,plotuFy]=[uFx,uFy];
+	postproc2D(gref[],plotuFx[],ThF,"force.vtk");
+}
+
+/*
+{
+	ofstream flname("test.txt"); 
+	flname << Kx[];
+}
+*/
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//Matrix formulation
+//////////////////////////////////////////////////////////////////////////////////////
+
+/////////////////////////////////////////////////////////
+// INJECTION TERM
+
+varf BCin([uFx,uFy,pF],[vFx,vFy,wF],solver=UMFPACK)=
+int2d(ThF)(gref*wF)
++on(6,uFx=inject,uFy=0);
+
+/////////////////////////////////////////////////////////
+// MATRIX FF
+
+varf MASSFsum([uFx,uFy,pF],[vFx,vFy,wF])=int2d(ThF)((timedep*rohF/delt)*cdot(uFx,uFy,vFx,vFy))+on(6,uFx=inject,uFy=0);
+matrix MASSF=MASSFsum(VFh,VFh);
+
+varf AFsum([uFx,uFy,pF],[vFx,vFy,wF])=
+int2d(ThF)(muF*(dx(uFx)*dx(vFx)+dx(uFy)*dx(vFy)+dy(uFx)*dy(vFx)+dy(uFy)*dy(vFy)));
+matrix AF=AFsum(VFh,VFh);
+
+varf AFDsum([uFx,uFy,pF],[vFx,vFy,wF])=
+int2d(ThF)(0*cdot(kappafxx*uFx,kappafyy*uFy,vFx,vFy));	  //MASSF
+matrix AFD=AFDsum(VFh,VFh);
+
+varf ABJS1sum([uFx,uFy,pF],[vFx,vFy,wF])=
+int1d(ThF,5)(bjs*(cdot(tgx(uFx,uFy),tgy(uFx,uFy),tgx(vFx,vFy),tgy(vFx,vFy))));
+matrix ABJS1=ABJS1sum(VFh,VFh);
+
+varf BPFTsum([uFx,uFy,pF],[vFx,vFy,wF])=
+-int2d(ThF)(pF*div(vFx,vFy));
+matrix BPFT=BPFTsum(VFh,VFh);
+
+varf BPFsum([uFx,uFy,pF],[vFx,vFy,wF])=
+int2d(ThF)(wF*div(uFx,uFy));
+matrix BPF=BPFsum(VFh,VFh);
+
+varf QPsum([uFx,uFy,pF],[vFx,vFy,wF])=
+int2d(ThF)(stabf*hTriangle*hTriangle*(dx(pF)*dx(wF)+dy(pF)*dy(wF)));
+matrix QP=QPsum(VFh,VFh);
+
+matrix FF = ABJS1+AFD+AF+BPF+BPFT+QP+MASSF;
+matrix FFmono= ABJS1+AFD+AF+BPF+BPFT+QP+MASSF;
+
+/////////////////////////////////////////////////////////////////////////////////////////
+//MATRIX FS
+
+/// left:
+
+varf ABJS2T1sum([eta1x,eta1y],[vFx,vFy,wF])=
+-int1d(ThF,5)(bjs*(1.0/delt)*cdot(tgx(eta1x,eta1y),tgy(eta1x,eta1y),tgx(vFx,vFy),tgy(vFx,vFy)));
+matrix ABJS2T1=ABJS2T1sum(VS1h,VFh);
+
+varf BG1T1sum([LAMBDA],[vFx,vFy,wF])=
+int1d(ThL,5)(LAMBDA*cdot(vFx,vFy,N.x,N.y));
+matrix BG1T1=BG1T1sum(LLh,VFh);
+
+matrix FS1=[
+[ABJS2T1, BG1T1]
+];
+matrix FS1mono=[
+[ABJS2T1, BG1T1]
+];
+
+////////////////////////////////////////////////////////////////////////////////////////
+//MATRIX MM
+
+varf BCinM1([uP1x,uP1y,pP1],[vP1x,vP1y,wP1],solver=UMFPACK)=
+-int1d(ThS1,1,2,3)(cdot(p0,p0,vP1x*N.x,vP1y*N.y))+on(4,uP1x=0,uP1y=0);
+
+/// left:
+
+varf AQ1sum([uP1x,uP1y,pP1],[vP1x,vP1y,wP1])=
+int2d(ThS1)(cdot(kappaxx*uP1x,kappayy*uP1y,vP1x,vP1y))
++on(4,uP1x=0,uP1y=0);								
+matrix AQ1=AQ1sum(VM1h,VM1h);
+
+varf BPQT1sum([uP1x,uP1y,pP1],[vP1x,vP1y,wP1])=
+-int2d(ThS1)(1*pP1*div(vP1x,vP1y));
+matrix BPQT1=BPQT1sum(VM1h,VM1h);
+
+varf BPQ1sum([uP1x,uP1y,pP1],[vP1x,vP1y,wP1])=
+int2d(ThS1)(1*wP1*div(uP1x,uP1y));
+matrix BPQ1=BPQ1sum(VM1h,VM1h);
+
+varf MASSP1sum([uP1x,uP1y,pP1],[vP1x,vP1y,wP1])=
+int2d(ThS1)((s0/delt)*(wP1*pP1));
+matrix MASSP1=MASSP1sum(VM1h,VM1h);
+
+varf QPP1sum([uP1x,uP1y,pP1],[vP1x,vP1y,wP1])=
+int2d(ThS1)(stab*hTriangle*hTriangle*(dx(pP1)*dx(wP1)+dy(pP1)*dy(wP1)));
+matrix QPP1=QPP1sum(VM1h,VM1h);
+
+matrix MM1 = AQ1+BPQT1+BPQ1+MASSP1+QPP1;
+matrix MM1mono=AQ1+BPQT1+BPQ1+MASSP1+QPP1;
+
+////////////////////////////////////////////////////////////////////////////////////////
+//MATRIX MS
+
+/// left:
+
+varf BSPT1sum([eta1x,eta1y],[vP1x,vP1y,wP1])=
+int2d(ThS1)((alfa/delt)*wP1*div(eta1x,eta1y));
+matrix BSPT1=BSPT1sum(VS1h,VM1h);
+
+varf BG2T1sum([LAMBDA],[vP1x,vP1y,wP1])=
+-int1d(ThL,5)(LAMBDA*cdot(vP1x,vP1y,N.x,N.y));
+matrix BG2T1=BG2T1sum(LLh,VM1h);
+
+matrix MS1=[
+[BSPT1, BG2T1]
+];
+matrix MS1mono=[
+[BSPT1, BG2T1]
+];
+
+/////////////////////////////////////////////////////////////////////////////////////
+//SFmono
+
+/// left:
+
+varf ABJS21sum([uFx,uFy,pF],[ksi1x,ksi1y])=
+-int1d(ThS1,5)(bjs*cdot(tgx(uFx,uFy),tgy(uFx,uFy),tgx(ksi1x,ksi1y),tgy(ksi1x,ksi1y)));
+matrix ABJS21=ABJS21sum(VFh,VS1h);
+
+varf BG11sum([uFx,uFy,pF],[MU])=
+-int1d(ThL,5)(MU*cdot(uFx,uFy,N.x,N.y));
+matrix BG11=BG11sum(VFh,LLh);
+
+matrix SF1mono=[
+[ABJS21],
+[BG11  ]
+];
+
+matrix SF1=0*SF1mono;
+/////////////////////////////////////////////////////////////////////////////////////
+//SMmono
+
+/// left:
+
+varf BSP1sum([uP1x,uP1y,pP1],[ksi1x,ksi1y])
+=-int2d(ThS1)(alfa*pP1*div(ksi1x,ksi1y));
+matrix BSP1=BSP1sum(VM1h,VS1h);
+
+varf BG21sum([uP1x,uP1y,pP1],[MU])
+=int1d(ThL,5)(MU*cdot(uP1x,uP1y,N.x,N.y));
+matrix BG21=BG21sum(VM1h,LLh);
+
+matrix SM1mono=[
+[BSP1],
+[BG21]
+];
+
+matrix SM1 = 0*SM1mono;
+
+/////////////////////////////////////////////////////////////////////////////////////
+//MATRIX SS
+
+/// left:
+
+varf AS1sum([eta1x,eta1y],[ksi1x,ksi1y])=
+int2d(ThS1)(2.0*muS*(dx(ksi1x)*dx(eta1x)+dy(ksi1y)*dy(eta1y)))														 
++int2d(ThS1)(muS*(dx(ksi1y)*dx(eta1y)+dy(ksi1x)*dx(eta1y)+dx(ksi1y)*dy(eta1x)+dy(ksi1x)*dy(eta1x)))		  
++int2d(ThS1)((lambdaS)*(dx(ksi1x)*dx(eta1x)+dy(ksi1y)*dx(eta1x)+dx(ksi1x)*dy(eta1y)+dy(ksi1y)*dy(eta1y))) 
++ on(1,2,3,eta1x=0, eta1y=0);
+matrix AS1=AS1sum(VS1h,VS1h);
+
+varf ABJS31sum([eta1x,eta1y],[ksi1x,ksi1y])=
+int1d(ThS1,5)(bjs*(1.0/delt)*cdot(tgx(eta1x,eta1y),tgy(eta1x,eta1y),tgx(ksi1x,ksi1y),tgy(ksi1x,ksi1y)));
+matrix ABJS31=ABJS31sum(VS1h,VS1h);
+
+varf BG3T1sum([LAMBDA],[ksi1x,ksi1y])=
+-int1d(ThL,5)(LAMBDA*cdot(ksi1x,ksi1y,N.x,N.y));
+matrix BG3T1=BG3T1sum(LLh,VS1h);
+
+varf BG31sum([eta1x,eta1y],[MU])=
+int1d(ThL,5)(MU*(1/delt)*cdot(eta1x,eta1y,N.x,N.y));
+matrix BG31=BG31sum(VS1h,LLh);
+
+varf TECH1sum([LAMBDA],[MU])=
+//int1d(ThL,6)(lenEdge*lenEdge*LAMBDA*MU)+
+intalledges(ThL)(1.e-13*LAMBDA*MU);//
+matrix TECH1=TECH1sum(LLh,LLh);
+
+matrix tmp10=AS1+ABJS31;
+
+matrix SS1=[
+[tmp10 , BG3T1],
+[BG31, TECH1]
+];
+
+matrix SS1mono=[
+[tmp10 , BG3T1],
+[BG31, TECH1]
+];
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//OLD matrix formulation
+//////////////////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////////////////////
+//FFold
+
+varf MASSFsumold([uFoldx,uFoldy,pFold],[vFx,vFy,wF])=int2d(ThF)((timedep*rohF/delt)*cdot(uFoldx,uFoldy,vFx,vFy));
+matrix MASSFold=MASSFsumold(VFh,VFh);
+
+matrix FFmonoold = MASSFold;
+matrix FFold = MASSFold;
+
+//////////////////////////////////////////////////////////////////////////////////////
+//FSold
+
+/// left:
+
+varf ABJS2T1sumold([eta1oldx,eta1oldy],[vFx,vFy,wF])=
+-int1d(ThF,5)(bjs*(1.0/delt)*cdot(tgx(eta1oldx,eta1oldy),tgy(eta1oldx,eta1oldy),tgx(vFx,vFy),tgy(vFx,vFy)));
+matrix ABJS2T1old=ABJS2T1sumold(VS1h,VFh);
+
+matrix tmp2 = 0*BG1T1;
+
+matrix FS1old=[
+[ABJS2T1old, tmp2]
+];
+matrix FS1monoold=[
+[ABJS2T1old, tmp2]
+];
+
+//////////////////////////////////////////////////////////////////////
+//MMOld
+
+/// left:
+
+varf MASSP1sumold([uP1oldx,uP1oldy,pP1old],[vP1x,vP1y,wP1])=
+int2d(ThS1)((s0/delt)*(wP1*pP1old));
+matrix MASSP1old=MASSP1sumold(VM1h,VM1h);
+
+matrix MM1old = MASSP1old;
+matrix MM1monoold = MASSP1old;
+
+///////////////////////////////////////////////////////////////////
+// MSold
+
+/// left:
+
+varf BSPT1sumold([eta1oldx,eta1oldy],[vP1x,vP1y,wP1])=
+int2d(ThS1)((alfa/delt)*wP1*div(eta1oldx,eta1oldy));
+matrix BSPT1old=BSPT1sumold(VS1h,VM1h);
+
+matrix tmp3 = 0*BG2T1;
+
+matrix MS1old=[
+[BSPT1old, tmp3]
+];
+matrix MS1monoold=[
+[BSPT1old, tmp3]
+];
+
+///////////////////////////////////////////////////////////////////
+// SFold // LOOKS LIKE IT IS NOT USED, WHY IS IT HERE?????
+
+/// left:
+
+varf ABJS21sumold([uFoldx,uFoldy,pFold],[ksi1x,ksi1y])=
+int1d(ThS1,5)(bjs*cdot(tgx(uFoldx,uFoldy),tgy(uFoldx,uFoldy),tgx(ksi1x,ksi1y),tgy(ksi1x,ksi1y)));
+matrix ABJS21old=ABJS21sumold(VFh,VS1h);
+
+varf BG11sumold([uFoldx,uFoldy,pFold],[MU])=
+int1d(ThL,5)(MU*cdot(uFoldx,uFoldy,N.x,N.y));
+matrix BG11old=BG11sumold(VFh,LLh);
+
+matrix SF1old=[
+[ABJS21old],
+[BG11old  ]
+];
+
+/////////////////////////////////////////////////////////////////////////////////////
+//SMmono // LOOKS LIKE IT IS NOT USED, WHY IS IT HERE?????
+
+/// left:
+
+varf BSP1sumold([uP1oldx,uP1oldy,pP1old],[ksi1x,ksi1y])
+=int2d(ThS1)(alfa*pP1old*div(ksi1x,ksi1y));
+matrix BSP1old=BSP1sumold(VM1h,VS1h);
+
+varf BG21sumold([uP1oldx,uP1oldy,pP1old],[MU])
+=-int1d(ThL,5)(MU*cdot(uP1oldx,uP1oldy,N.x,N.y));
+matrix BG21old=BG21sumold(VM1h,LLh);
+
+matrix SM1old=[
+[BSP1old],
+[BG21old]
+];
+
+///////////////////////////////////////////////////////////////////
+//SSold
+
+/// left:
+
+varf ABJS31sumold([eta1oldx,eta1oldy],[ksi1x,ksi1y])=
+int1d(ThS1,5)(bjs*(1.0/delt)*cdot(tgx(eta1oldx,eta1oldy),tgy(eta1oldx,eta1oldy),tgx(ksi1x,ksi1y),tgy(ksi1x,ksi1y)));
+matrix ABJS31old=ABJS31sumold(VS1h,VS1h);
+
+varf BG31sumold([eta1oldx,eta1oldy],[MU])=
+int1d(ThL,5)(MU*(1/delt)*cdot(eta1oldx,eta1oldy,N.x,N.y));
+matrix BG31old=BG31sumold(VS1h,LLh);
+
+matrix tmp4 = 0*BG3T1;
+
+matrix SS1old=[
+[ABJS31old, tmp4   ],
+[BG31old  , 0]
+];
+
+matrix SS1monoold=[
+[ABJS31old, tmp4   ],
+[BG31old  , 0]
+];
+
+///////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////
+
+matrix mono=[
+[ SS1mono, SM1mono, SF1mono],
+[ MS1mono, MM1mono, 0      ],
+[ FS1mono, 0      , FFmono ]
+];
+
+matrix monoold=[
+[ SS1monoold, 0         , 0        ],
+[ MS1monoold, MM1monoold, 0        ],
+[ FS1monoold, 0         , FFmonoold]
+];
+
+///////////////////////////////////////////////////////////////////
+//vector of RHS
+real[int] xxf(FF.n),xxfold(FF.n),xxfmono(FF.n),bf(FF.n),bbf(FF.n),bowlf(FF.n);
+
+real[int] xxm1(MM1.n),xxm1old(MM1old.n),xxm1mono(MM1old.n),bm1(MM1.n),bbm1(MM1.n),bowlm1(MM1.n);
+real[int] xxs1(SS1.n),xxs1old(SS1old.n),xxs1mono(SS1old.n),bs1(SS1.n),bbs1(SS1.n),bowls1(SS1.n);
+real[int] pfakem1(MM1.n),pfakes1(SS1.n);
+
+pfakem1=0;
+pfakes1=0;
+
+// PRECONDITIONER 1
+func real[int] mypreconid(real[int] & xx) // identity
+{
+	real[int] rr=xx;
+	return rr;
+}
+
+// IDENTITY MATRIX
+real[int] one(LLh.ndof);
+one = 1;
+matrix Id = one;
+
+// PRECONDITIONER 2
+/*
+set(Id, solver=UMFPACK);
+set(tmp10, solver=GMRES, eps=1.e-13);
+set(MM1, solver=UMFPACK);
+set(FF, solver=UMFPACK);
+
+func real[int] PP(real[int] & rr)
+{
+	real[int] xpre = rr;
+	[bf,bm1,bs1,bl1]=xpre;
+
+	xxl1 = Id * bl1;
+
+	bbs1 = bs1;
+	bowls1 = BG3T1*xxl1;
+	bbs1 -= bowls1;
+	xxs1 = tmp10^-1 * bbs1;
+
+	bbm1=bm1;
+	bowlm1=BG2T1*xxl1;
+	bbm1-=bowlm1;
+	bowlm1=BSPT1*xxs1;
+	bbm1-=bowlm1;
+	xxm1=MM1^-1 * bbm1;
+
+	bbf=bf;
+	bowlf=BG1T1*xxl1;
+	bbf-=bowlf;
+	bowlf=ABJS2T1*xxs1;
+	bbf-=bowlf;
+	xxf=FF^-1 * bbf;
+
+	xpre=[xxf,xxm1,xxs1,xxl1];
+
+	return xpre;
+}
+*/
+
+/////////////////////////////////////////////////////////////////// 
+include "Pfunctioncos.edp";
+varf l(unused,VFh)=BCin;
+varf lM1(unused,VM1h)=BCinM1;
+real t=0;
+int br=1;
+pf0=initPf(x,y);
+pp01=initPp(x,y);
+
+[uFx,uFy,pF]=[initv(x,y),initv(x,y),pf0];
+[uP1x,uP1y,pP1]=[initu(x,y),initu(x,y),pp01];
+//LAMBDA = 1;
+
+// INITIALIZATION
+xxf=0;
+xxm1=0;
+xxs1=0;
+xxfold=uFx[];
+xxm1old=uP1x[];
+xxs1old=0.0;
+bf=0;
+bbf=0;
+bm1=0;
+bbm1=0;
+bs1=0;
+bbs1=0;
+
+real[int] xx=[xxs1,xxm1,xxf];
+real[int] xxold=[xxs1old,xxm1old,xxfold];
+xx=0.0;	
+
+// Why do i need this?
+error4[count] = 0;
+error1[count] = 0;
+error5[count] = 0;
+
+for (int k=1;k<=NN;++k){
+
+	real[int] Pinvec= l(0,VFh);
+	real[int] PinvecM1= lM1(0,VM1h);
+	
+	t=t+delt;
+
+/////////////////////////////////////////////////////////////////// 
+// MONOLITHIC SCHEME
+/////////////////////////////////////////////////////////////////// 
+
+	real[int] b=[pfakes1,PinvecM1,Pinvec];
+	b+=(monoold*xxold);
+	[dummyX,dummyY,dummyP] = [uFx,uFy,pF];
+	
+	//set(split,solver=UMFPACK);
+	//set(split,solver=GMRES,precon=PP,eps=1.e-13);
+	//set(mono,solver=sparsesolver,datafilename="ffmumps_fileparam.txt");
+	set(mono,solver=sparsesolver);
+	xx = mono^-1 * b;
+	
+	// Continuity of flux
+	if(k==NN){
+		cond13left[count]=int1d(ThF,5)(cdot(uFx,uFy,N.x,N.y)-(1/delt)*cdot(eta1x,eta1y,N.x,N.y)+(1/	delt)*cdot(eta1oldx,eta1oldy,N.x,N.y)-cdot(uP1x,uP1y,N.x,N.y));
+	}
+	
+	xxold=xx;
+	[xxs1mono,xxm1mono,xxfmono]=xx;
+	
+	
+	uFx[]=xxfmono;
+	uP1x[]=xxm1mono;
+	eta1x[]=xxs1mono;
+	//LAMBDA[]=xxl1mono;
+	
+	fespace Vh1(ThF,P1);
+	fespace VhS1(ThS1,P1);
+	
+	Vh1 pf;
+	pf=pF;
+	VhS1 pp1;
+	pp1=pP1;
+	
+	cout << k << " iterations out of " << NN << endl;
+	
+	if(k%pr==0&&plotflag){
+		// visualization for structure
+		[ploteta1x,ploteta1y]=[eta1x,eta1y];
+		postproc2D(pp1[],ploteta1x[],ThS1,namesolid1+string(br)+".vtk");
+		
+		[plotuP1x,plotuP1y]=[uP1x,uP1y];
+		postproc2D(pp1[],plotuP1x[],ThS1,nameq1+string(br)+".vtk");
+		
+		/*
+		if (k == 2){
+			// visualization for porosity
+			postproc2DP0(inPor[],ThPerm,"./paraview/PorosityInit_"+string(br)+".vtk");
+			postproc2DP0(Por[],ThS1,namep+string(br)+".vtk");
+		
+			// visualization for permeability
+			postproc2DP0(inPermx[],ThPerm,"./paraview/PermXInit_"+string(br)+".vtk");
+			postproc2DP0(inPermy[],ThPerm,"./paraview/PermYInit_"+string(br)+".vtk");
+			postproc2DP0(Kx[],ThS1,namepx+string(br)+".vtk");
+			postproc2DP0(Ky[],ThS1,namepy+string(br)+".vtk");
+			
+			// visualization for Young's modulus
+			es = ES;
+			postproc2DP0(es[],ThS1,"./paraview/Youngs_"+string(br)+".vtk");
+		}
+		*/
+		
+		// visualization for fluid {!!!CHANGE BACK TO PLOT FLUID PRESSURE!!!}
+		[plotuFx,plotuFy]=[uFx,uFy];
+		postproc2D(pf[],plotuFx[],ThF,namefluid+string(br)+".vtk");
+		br=br+1;
+	
+	}
+	
+	if(count==0){
+		[testuP1x[k-1],testuP1y[k-1]] = [uP1x,uP1y];
+		
+		[testuFx[k-1],testuFy[k-1],testPf[k-1]] = [uFx,uFy,pf];
+		
+		[testeta1x[k-1],testeta1y[k-1]] = [eta1x,eta1y];
+		
+		testPp1[k-1] = pP1;
+		
+		testLAMBDA1[k-1] = LAMBDA;
+	}
+	
+	VFh [eufx,eufy,epf] = [testuFx[k-1] - uFx, testuFy[k-1] - uFy, testPf[k-1] - pf]; 
+	VFh [rufx,rufy,rpf] = [testuFx[k-1], testuFy[k-1], testPf[k-1]];
+	
+	//VM1h [eup1x,eup1y,ep1] = [testuP1x[k-1] - uP1x, testuP1y[k-1] - uP1y, testPp1[k-1] - pP1];
+	//VM1h [rup1x,rup1y,rp1] = [testuP1x[k-1], testuP1y[k-1], testPp1[k-1]];
+	
+	VM11h [eup1x,eup1y,ep1] = [testuP1x[k-1] - uP1x, testuP1y[k-1] - uP1y, testPp1[k-1] - pP1];
+	VM11h [rup1x,rup1y,rp1] = [testuP1x[k-1], testuP1y[k-1], testPp1[k-1]];
+	
+	VS1h [eeta1x,eeta1y] = [testeta1x[k-1] - eta1x, testeta1y[k-1] - eta1y];
+	VS1h [reta1x,reta1y] = [testeta1x[k-1], testeta1y[k-1]];
+	
+	LLh elambda = testLAMBDA1[k-1] - LAMBDA;	
+	LLh rlambda = testLAMBDA1[k-1];	
+		
+		
+	// Compute L2 in time errors and absolute values
+	error1[count] += int2d(ThF)( dx(eufx)^2 + dy(eufx)^2 + dx(eufy)^2 + dy(eufy)^2 );
+	abs1[count]   += int2d(ThF)( dx(rufx)^2 + dy(rufx)^2 + dx(rufy)^2 + dy(rufy)^2 );
+	
+	error4[count] += int2d(ThS1)( eup1x^2 + eup1y^2 );
+	abs4[count]   += int2d(ThS1)( rup1x^2 + rup1y^2 );
+	
+	error6[count] += int1d(ThL)( elambda^2 );
+	abs6[count]   += int1d(ThL)( rlambda^2 );
+	
+	error7[count] += int2d(ThF) (epf^2);
+	abs7[count]   += int2d(ThF) (rpf^2);
+	
+	// Store values to compute l-infinity in time errors
+	error2tmp[k-1] = (int2d(ThS1)( ep1^2 )) / (int2d(ThS1)( rp1^2 ));
+	error5tmp[k-1] = (int2d(ThF)( eufx^2 + eufy^2 )) / (int2d(ThF)( rufx^2 + rufy^2 ));
+	
+	error3tmp[k-1] = (int2d(ThS1)( dx(eeta1x)^2 + dy(eeta1x)^2 + dx(eeta1y)^2 + dy(eeta1y)^2 )) / 
+					 (int2d(ThS1)( dx(reta1x)^2 + dy(reta1x)^2 + dx(reta1y)^2 + dy(reta1y)^2 ));
+}
+	
+error2[count] = error2tmp.max;
+error3[count] = error3tmp.max;
+error5[count] = error5tmp.max;
+
+count+=1;
+}
+
+// OUTPUT ERRORS:
+real[int] err1(nMeshes);
+real[int] err2(nMeshes);
+real[int] err3(nMeshes);
+real[int] err4(nMeshes);
+real[int] err5(nMeshes);
+real[int] err6(nMeshes);
+real[int] err7(nMeshes);
+// initialize rate arrays
+real[int] rate1(nMeshes);
+real[int] rate2(nMeshes);
+real[int] rate3(nMeshes);
+real[int] rate4(nMeshes);
+real[int] rate5(nMeshes);
+real[int] rate6(nMeshes);
+real[int] rate7(nMeshes);
+
+
+for (int k=0; k<error1.n; k++){
+	if (k != error1.n-1)
+	{
+		// Fluid velocity H1 in space L2 in time
+		err1(k) = sqrt(error1(nMeshes-k-1)/abs1(nMeshes-k-1));   
+		//err1(k) = sqrt(error1(nMeshes-k-1))/1;   
+		// Darcy pressure L2 in space l-infinity in time
+		err2(k) = sqrt(error2(nMeshes-k-1));							
+		// Displacement H1 in space l-infinity
+		err3(k) = sqrt(error3(nMeshes-k-1));								
+		// Darcy velocity L2 in space L2 in time
+		err4(k) = sqrt(error4(nMeshes-k-1)/abs4(nMeshes-k-1));	
+		// Fluid pressure L2 is space L2 in time
+		err7(k) = sqrt(error7(nMeshes-k-1)/abs7(nMeshes-k-1));	
+		// Fluid velocity L2 in space l-infinity in time
+		err5(k) = sqrt(error5(nMeshes-k-1));	
+		// Lagrange mult
+		//err6(k) = sqrt(error6(nMeshes-k-1));
+	} else {
+		err1(k) = 0.0;
+		err2(k) = 0.0;
+		err3(k) = 0.0;
+		err4(k) = 0.0;
+		err5(k) = 0.0;
+		err7(k) = 0.0;
+		//err6(k) = 0.0;
+	}
+	
+	if (k==0 || k==error1.n-1){			
+		rate1(k) = 0.0;
+		rate2(k) = 0.0;
+		rate3(k) = 0.0;
+		rate4(k) = 0.0;
+		rate5(k) = 0.0;
+		rate7(k) = 0.0;
+		//rate6(k) = 0.0;
+	} else {
+		rate1(k) = log(err1(k-1)/err1(k))/log(2.0);
+		rate2(k) = log(err2(k-1)/err2(k))/log(2.0);
+		rate3(k) = log(err3(k-1)/err3(k))/log(2.0);
+		rate4(k) = log(err4(k-1)/err4(k))/log(2.0);
+		rate5(k) = log(err5(k-1)/err5(k))/log(2.0);
+		rate7(k) = log(err7(k-1)/err7(k))/log(2.0);
+		//rate6(k) = log(err6(k-1)/err6(k))/log(2.0);
+		//rate6(k) = 1;
+	}	
+}
+
+// OUTPUT ERRORS:
+if(converg){
+	matrix errors=[[(err1), (rate1), (err2), (rate2), (err3), (rate3), (err4), (rate4), (err5), (rate5), (err7), (rate7)]];
+	{
+		ofstream errOut("errorsrates.txt"); 
+		errOut<<errors;
+	}
+	matrix errors1=[[(error1), (error2), (error3), (error4), (error5), (error7)]];
+	{
+		ofstream errout("errors.txt");
+		errout << errors1;
+	}
+}
+
+// OUTPUT INTERFACE RESIDUALS:
+if(intresid){
+	matrix flux=[[cond13left]];
+	{
+		ofstream fluxOut("flux.txt");
+		fluxOut<<flux;
+	}
+}
+
+// Print results
+cout << "=================	   ===============" << endl;
+cout << "Errors and rates" << endl;
+cout << "|u_1|	   " << "	rate 	" 
+	 << "|p_f| 	   " << "	rate 	" 
+	 << "|p_p|	   " << "	rate 	" 
+	 << "|D(eta)|     " << "	rate 	"
+	 << "|u_p| 	   " << "	rate 	"
+	 << "|u_2| 	   " << "	rate 	" 
+	 << "|lam|     " << "	rate 	" << endl;
+for (int i=0; i<err1.n; i++){
+	cout.scientific << err1[i] << "	" << rate1[i] << "	"
+			     	<< err7[i] << "	" << rate7[i] << "	"
+		 		    << err2[i] << "	" << rate2[i] << "	"
+		 			<< err3[i] << "	" << rate3[i] << "	"
+					<< err4[i] << "	" << rate4[i] << "	"
+					<< err5[i] << "	" << rate5[i] << endl;
+
+}
+cout << "================================" << endl;
+cout << "Interface residual" << endl;
+cout << "R_left " << endl;
+for (int i=nMeshes-1; i>=0; i--){
+	cout.scientific << cond13left[i]  << endl;
+}
+

@@ -1,0 +1,57 @@
+
+// PARAVIEW (funzione per la visualizzazione)
+// ==========================================
+
+func int postproc2D (real[int] & p0,real[int] & velocity,mesh & T,string text)
+{
+
+ ofstream fii(text);
+ //va bene solo per i P1
+ int ntet=T.nt;
+ //int nvt=T.nv; 
+ fii << "# vtk DataFile Version 2.0"<<endl;
+ fii << "Una prova"<<endl;
+ fii << "ASCII"<<endl<<endl;
+ fii << "DATASET UNSTRUCTURED_GRID"<<endl<<endl;
+ fii << "POINTS "<< T.nv << " float"<<endl; 
+ //points
+ for(int i=0;i<T.nv;i++)
+      fii <<T(i).x<<" "<<T(i).y<<" 0 "<<endl;
+ fii <<endl<< "CELLS "<< ntet <<" "<< 4*ntet <<endl; 
+ //Celle 
+ for(int i=0;i<ntet;i++)
+   fii << "3 "<<int(T[i][0])<<" "<<int(T[i][1])<<" "<<int(T[i][2])<<endl; //" "
+ //          <<int(T[i][3])<<endl; 
+ fii <<endl<< "CELL_TYPES "<< ntet <<endl; 
+ //ciclo for tutti = 5 triangoli
+ for(int i=0;i<ntet;i++)
+     fii <<"5"<<endl;
+
+ fii << endl<< "POINT_DATA "<< T.nv << endl;
+ fii << "SCALARS pressure float 1" << endl;
+ fii << "LOOKUP_TABLE default"<< endl;
+ for(int i=0;i<T.nv;i++){
+   if(abs(p0[i])>1e-25){
+      fii << p0[i]<< endl;
+   }
+   else{
+   	  fii << 0.0<< endl;
+   }
+ }
+
+ fii << "VECTORS velocity float"<< endl;
+  for(int i=0;i<velocity.n;i++){
+  	if(abs(velocity[i])>1e-25){
+      fii << velocity[i]<<" ";
+  	}
+  	else{
+   	  fii << 0.0<< endl;
+   }
+   if((i+1)%2==0) 
+      fii <<" 0 "<< endl;
+ }
+  //for(int i=0;i<T.nv;i++)
+  //  fii << velocity[i]<<" "<<velocity[i+T.nv]<<" "<<velocity[i+2*T.nv]<< endl;
+
+ return 0;
+}

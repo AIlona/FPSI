@@ -1,0 +1,10 @@
+//
+func real Pressure(real t){
+if (t<=(0.003))
+    real P=5000*(1-cos((2*pi*t)/0.003));
+else
+        P=0;
+	
+return P;
+}
+
